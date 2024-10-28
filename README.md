@@ -38,9 +38,10 @@ cast send --rpc-url https://rpc.api.moonbase.moonbeam.network \
 
 ## Get All Tokens
 ```bash
-cast call --rpc-url https://rpc.api.moonbase.moonbeam.network \
+boji123@boji123:~/dev/test/pumpfun/pumpfun-evm-smart-contract$ cast call --rpc-url https://rpc.api.moonbase.moonbeam.network \
     0x4fe8ea21679b3ee10457a097c38452a94edab33b \
-    "getAllTokens()(address[])"
+    "getAllTokens()(address[])" \
+    --from 0x7a304baEEcFDb8DC25A64E692AAA4d4F7431C923
 ```
 Example response:
 ```
