@@ -6,14 +6,14 @@ import "./Token.sol";
 interface IPumpFun {
     function createPool(
         address token,
-        uint256 amount
+        string memory description
     ) external payable;
     function getCreateFee() external view returns(uint256);
 }
-contract TokenFactory  {
-    uint256 public currentTokenIndex = 0;
-    uint256 public immutable INITIAL_AMOUNT = 10**27;
 
+contract TokenFactory {
+    uint256 public constant INITIAL_SUPPLY = 1_000_000 * 10**18; // 1 million tokens with 18 decimals
+    
     address public contractAddress;
     address public taxAddress = 0x044421aAbF1c584CD594F9C10B0BbC98546CF8bc;
     
@@ -21,36 +21,37 @@ contract TokenFactory  {
         address tokenAddress;
         string tokenName;
         string tokenSymbol;
-        uint256 totalSupply;
+        string description;
     }
 
     TokenStructure[] public tokens;
 
-    constructor () {}
+    constructor() {}
 
-    function deployERC20Token (
+    function deployERC20Token(
         string memory name,
-        string memory ticker
+        string memory ticker,
+        string memory description
     ) public payable {
-        Token token = new Token(name, ticker, INITIAL_AMOUNT);
+        Token token = new Token(name, ticker, INITIAL_SUPPLY);
         tokens.push(
-            TokenStructure (
-                address(token),
-                name,
-                ticker,
-                INITIAL_AMOUNT
-            )
+            TokenStructure({
+                tokenAddress: address(token),
+                tokenName: name,
+                tokenSymbol: ticker,
+                description: description
+            })
         );
 
-        token.approve(contractAddress, INITIAL_AMOUNT);
-        uint256 balance = IPumpFun(contractAddress).getCreateFee();
+        token.approve(contractAddress, INITIAL_SUPPLY);
+        uint256 fee = IPumpFun(contractAddress).getCreateFee();
 
-        require(msg.value >= balance, "Input Balance Should Be larger");
-        IPumpFun(contractAddress).createPool{value: balance}(address(token), INITIAL_AMOUNT);
+        require(msg.value >= fee, "Insufficient creation fee");
+        IPumpFun(contractAddress).createPool{value: fee}(address(token), description);
     }
 
-    function setPoolAddress (address newAddr) public  {
+    function setPoolAddress(address newAddr) public {
         require(newAddr != address(0), "Non zero Address");
         contractAddress = newAddr;
-    } 
+    }
 }

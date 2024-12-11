@@ -72,6 +72,12 @@ contract PumpFun is ReentrancyGuard {
         uint256 tokenTotalSupply;
         uint256 mcapLimit;
         bool complete;
+        uint256 creationTime;
+        uint256 lastTradeTime;
+        uint256 tradeCount;
+        address creator;
+        string description;
+        bool isKingOfHill;
     }
 
     struct Comment {
@@ -97,7 +103,14 @@ contract PumpFun is ReentrancyGuard {
     event Trade(address indexed mint, uint256 ethAmount, uint256 tokenAmount, bool isBuy, address indexed user, uint256 timestamp, uint256 virtualEthReserves, uint256 virtualTokenReserves);
     event CoinFlipBet(address indexed player, uint256 amount, bool choice, bool result, uint256 timestamp);
     event CoinFlipWin(address indexed player, uint256 amount);
+    event CommentAdded(address indexed token, address indexed user, string message, uint256 timestamp);
+    event PriceUpdate(address indexed token, uint256 newPrice, uint256 timestamp);
+    event NewKingOfHill(address indexed token, uint256 mcap, uint256 timestamp);
+    event ProgressUpdate(address indexed token, uint256 progress, bool isKingProgress, uint256 timestamp);
 
+    address public currentKingToken;
+    uint256 public kingOfHillMcap;
+    
     modifier onlyOwner {
         require(msg.sender == owner, "Not Owner");
         _;
@@ -119,25 +132,33 @@ contract PumpFun is ReentrancyGuard {
     }
         function createPool(
         address token,
-        uint256 amount
-    ) payable public {
-        require(amount > 0, "CreatePool: Larger than Zero");
-        require(feeRecipient != address(0), "CreatePool: Non Zero Address");
+        string memory description
+    ) payable public nonReentrant {
         require(msg.value >= createFee, "CreatePool: Value Amount");
+        require(feeRecipient != address(0), "CreatePool: Non Zero Address");
+        require(bondingCurve[token].tokenMint == address(0), "Pool already exists");
+
+        uint256 amount = IERC20(token).balanceOf(msg.sender);
+        require(amount == 1_000_000 * 10**18, "Invalid token supply");
 
         IERC20(token).transferFrom(msg.sender, address(this), amount);
-
         payable(feeRecipient).transfer(createFee);
 
-        bondingCurve[token] = Token ({
+        bondingCurve[token] = Token({
             tokenMint: token,
-            virtualTokenReserves: initialVirtualTokenReserves, 
+            virtualTokenReserves: amount,
             virtualEthReserves: initialVirtualEthReserves,
             realTokenReserves: amount,
             realEthReserves: 0,
-            tokenTotalSupply: tokenTotalSupply,
+            tokenTotalSupply: amount,
             mcapLimit: mcapLimit,
-            complete: false
+            complete: false,
+            creationTime: block.timestamp,
+            lastTradeTime: block.timestamp,
+            tradeCount: 0,
+            creator: msg.sender,
+            description: description,
+            isKingOfHill: false
         });
 
         allTokens.push(token);
@@ -150,48 +171,70 @@ contract PumpFun is ReentrancyGuard {
         address token,
         uint256 amount,
         uint256 maxEthCost
-    ) payable public {
+    ) payable public nonReentrant {
         Token storage tokenCurve = bondingCurve[token];
-        require(amount > 0, "Should Larger than zero");
-        require(tokenCurve.complete == false, "Should Not Completed");
+        require(amount > 0, "Should be larger than zero");
+        require(!tokenCurve.complete, "Trading completed");
+        require(tokenCurve.tokenMint != address(0), "Pool doesn't exist");
 
-        uint256 featureAmount = tokenCurve.realTokenReserves - amount;
-        uint256 featurePercentage = featureAmount * 100 / tokenCurve.tokenTotalSupply;
-        require(featurePercentage > 20, "Buy Amount Over");
+        // Calculate remaining supply percentage
+        uint256 remainingSupply = tokenCurve.realTokenReserves - amount;
+        uint256 remainingPercentage = (remainingSupply * 100) / tokenCurve.tokenTotalSupply;
+        require(remainingPercentage >= 20, "Cannot buy more than 80% of supply");
 
         uint256 ethCost = calculateEthCost(tokenCurve, amount);
+        require(ethCost <= maxEthCost, "Slippage too high");
+        require(msg.value >= ethCost, "Insufficient ETH sent");
 
-        require(ethCost <= maxEthCost, "Max Eth Cost");
-
-        uint256 feeAmount = feeBasisPoint * ethCost / 10000;
-        uint256 ethAmount = ethCost- feeAmount;
-
-        require(msg.value >= ethCost, "Exceed ETH Cost");
-
+        // Calculate and transfer fee
+        uint256 feeAmount = (ethCost * feeBasisPoint) / 10000;
+        uint256 netEthAmount = ethCost - feeAmount;
         payable(feeRecipient).transfer(feeAmount);
 
+        // Transfer tokens
         IERC20(token).transfer(msg.sender, amount);
 
+        // Update trading stats
+        tokenCurve.lastTradeTime = block.timestamp;
+        tokenCurve.tradeCount++;
+
+        // Update reserves
+        tokenCurve.realTokenReserves -= amount;
+        tokenCurve.virtualTokenReserves -= amount;
+        tokenCurve.virtualEthReserves += netEthAmount;
+        tokenCurve.realEthReserves += netEthAmount;
+
+        // Check if trading should complete
+        uint256 mcap = (tokenCurve.virtualEthReserves * tokenCurve.tokenTotalSupply) / tokenCurve.realTokenReserves;
+        if (mcap > tokenCurve.mcapLimit || remainingPercentage <= 20) {
+            tokenCurve.complete = true;
+            emit Complete(msg.sender, token, block.timestamp);
+        }
+
+        // Record trader if first time
         if (!hasTraded[token][msg.sender]) {
             tokenDetails[token].buyers.push(msg.sender);
             hasTraded[token][msg.sender] = true;
         }
 
-        tokenCurve.realTokenReserves -= amount;
-        tokenCurve.virtualTokenReserves -= amount;
-        tokenCurve.virtualEthReserves += ethAmount;
-        tokenCurve.realEthReserves += ethAmount;
+        emit Trade(token, ethCost, amount, true, msg.sender, block.timestamp, tokenCurve.virtualEthReserves, tokenCurve.virtualTokenReserves);
+        emit PriceUpdate(token, calculateCurrentPrice(token), block.timestamp);
 
-        uint256 mcap = tokenCurve.virtualEthReserves * tokenCurve.tokenTotalSupply / tokenCurve.realTokenReserves;
-        uint256 percentage = tokenCurve.realTokenReserves * 100 / tokenCurve.tokenTotalSupply;
-
-        if (mcap > tokenCurve.mcapLimit || percentage < 20) {
-            tokenCurve.complete = true;
-            
-            emit Complete(msg.sender, token, block.timestamp);
+        // Refund excess ETH
+        if (msg.value > ethCost) {
+            payable(msg.sender).transfer(msg.value - ethCost);
         }
 
-        emit Trade(token, ethCost, amount, true, msg.sender, block.timestamp, tokenCurve.virtualEthReserves, tokenCurve.virtualTokenReserves);
+        // Calculate new market cap and update king of hill if necessary
+        uint256 newMcap = (tokenCurve.virtualEthReserves * tokenCurve.tokenTotalSupply) / tokenCurve.realTokenReserves;
+        _updateKingOfHill(token, newMcap);
+
+        emit ProgressUpdate(
+            token,
+            (newMcap * 100) / mcapLimit,
+            (newMcap * 100) / kingOfHillMcap,
+            block.timestamp
+        );
     }
 
     function sell(
@@ -339,5 +382,94 @@ contract PumpFun is ReentrancyGuard {
 
     function getAllTokens() external view returns (address[] memory) {
         return allTokens;
+    }
+
+    // Add new helper function
+    function calculateCurrentPrice(address token) public view returns (uint256) {
+        Token memory tokenCurve = bondingCurve[token];
+        return (tokenCurve.virtualEthReserves * 1e18) / tokenCurve.virtualTokenReserves;
+    }
+
+    // Add function to get token statistics
+    function getTokenStats(address token) external view returns (
+        uint256 creationTime,
+        uint256 lastTradeTime,
+        uint256 tradeCount,
+        address creator,
+        uint256 currentPrice,
+        uint256 remainingSupply
+    ) {
+        Token memory tokenCurve = bondingCurve[token];
+        return (
+            tokenCurve.creationTime,
+            tokenCurve.lastTradeTime,
+            tokenCurve.tradeCount,
+            tokenCurve.creator,
+            calculateCurrentPrice(token),
+            tokenCurve.realTokenReserves
+        );
+    }
+
+    function getTokenProgress(address token) public view returns (
+        uint256 bondingCurveProgress,
+        uint256 kingOfHillProgress,
+        uint256 currentMcap,
+        uint256 ethInCurve,
+        bool isKing
+    ) {
+        Token memory tokenCurve = bondingCurve[token];
+        
+        // Calculate market cap
+        currentMcap = (tokenCurve.virtualEthReserves * tokenCurve.tokenTotalSupply) / tokenCurve.realTokenReserves;
+        
+        // Calculate bonding curve progress (towards graduation)
+        bondingCurveProgress = (currentMcap * 100) / mcapLimit;
+        
+        // Calculate progress towards becoming king
+        kingOfHillProgress = currentKingToken == address(0) ? 0 : (currentMcap * 100) / kingOfHillMcap;
+        
+        return (
+            bondingCurveProgress,
+            kingOfHillProgress,
+            currentMcap,
+            tokenCurve.realEthReserves,
+            tokenCurve.isKingOfHill
+        );
+    }
+
+    function _updateKingOfHill(address token, uint256 mcap) internal {
+        if (mcap > kingOfHillMcap) {
+            if (currentKingToken != address(0)) {
+                bondingCurve[currentKingToken].isKingOfHill = false;
+            }
+            currentKingToken = token;
+            kingOfHillMcap = mcap;
+            bondingCurve[token].isKingOfHill = true;
+            emit NewKingOfHill(token, mcap, block.timestamp);
+        }
+    }
+
+    function getTokenDetails(address token) external view returns (
+        Token memory tokenInfo,
+        uint256 bondingCurveProgress,
+        uint256 kingOfHillProgress,
+        uint256 currentMcap,
+        uint256 ethInCurve
+    ) {
+        (
+            uint256 bcProgress,
+            uint256 kohProgress,
+            uint256 mcap,
+            uint256 ethBalance,
+            bool isKing
+        ) = getTokenProgress(token);
+
+        return (
+            bondingCurve[token],
+            bcProgress,
+            kohProgress,
+            mcap,
+            ethBalance
+        );
     }
 }
