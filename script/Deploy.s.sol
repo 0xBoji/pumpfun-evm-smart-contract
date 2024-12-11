@@ -1,32 +1,34 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import "forge-std/Script.sol";
 import "../contracts/PumpFun.sol";
 import "../contracts/TokenFactory.sol";
 
-contract PumpFunFactory {
-    event Deployed(address indexed pumpFun, address indexed tokenFactory);
-    
-    function deploy(
-        address feeRecipient,
-        uint256 feeAmount,
-        uint256 basisFee
-    ) external returns (address pumpFun, address tokenFactory) {
+contract DeployScript is Script {
+    function run() external {
+        uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
+        address feeRecipient = vm.envAddress("FEE_RECIPIENT");
+        
+        uint256 createFee = 0.1 ether;
+        uint256 basisFee = 100; // 1%
+
+        vm.startBroadcast(deployerPrivateKey);
+
         // Deploy PumpFun
-        PumpFun _pumpFun = new PumpFun(
+        PumpFun pumpFun = new PumpFun(
             feeRecipient,
-            feeAmount,
+            createFee,
             basisFee
         );
-        
+
         // Deploy TokenFactory
-        TokenFactory _tokenFactory = new TokenFactory();
-        
-        // Set pool address in TokenFactory
-        _tokenFactory.setPoolAddress(address(_pumpFun));
-        
-        emit Deployed(address(_pumpFun), address(_tokenFactory));
-        
-        return (address(_pumpFun), address(_tokenFactory));
+        TokenFactory tokenFactory = new TokenFactory();
+        tokenFactory.setPoolAddress(address(pumpFun));
+
+        vm.stopBroadcast();
+
+        console.log("PumpFun deployed to:", address(pumpFun));
+        console.log("TokenFactory deployed to:", address(tokenFactory));
     }
-}
+} 

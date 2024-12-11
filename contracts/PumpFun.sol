@@ -38,6 +38,8 @@ interface IUniswapV2Router02 {
 }
 
 contract PumpFun is ReentrancyGuard {
+    uint256 public constant INITIAL_SUPPLY = 1_000_000 * 10**18; // 1 million tokens with 18 decimals
+
     receive() external payable {}
 
     address private owner;
@@ -106,7 +108,12 @@ contract PumpFun is ReentrancyGuard {
     event CommentAdded(address indexed token, address indexed user, string message, uint256 timestamp);
     event PriceUpdate(address indexed token, uint256 newPrice, uint256 timestamp);
     event NewKingOfHill(address indexed token, uint256 mcap, uint256 timestamp);
-    event ProgressUpdate(address indexed token, uint256 progress, bool isKingProgress, uint256 timestamp);
+    event ProgressUpdate(
+        address indexed token, 
+        uint256 bondingCurveProgress, 
+        uint256 kingOfHillProgress, 
+        uint256 timestamp
+    );
 
     address public currentKingToken;
     uint256 public kingOfHillMcap;
@@ -139,9 +146,12 @@ contract PumpFun is ReentrancyGuard {
         require(bondingCurve[token].tokenMint == address(0), "Pool already exists");
 
         uint256 amount = IERC20(token).balanceOf(msg.sender);
-        require(amount == 1_000_000 * 10**18, "Invalid token supply");
+        require(amount == INITIAL_SUPPLY, "Invalid token supply");
 
-        IERC20(token).transferFrom(msg.sender, address(this), amount);
+        // Transfer tokens from creator to this contract
+        require(IERC20(token).transferFrom(msg.sender, address(this), amount), "Token transfer failed");
+        
+        // Transfer creation fee
         payable(feeRecipient).transfer(createFee);
 
         bondingCurve[token] = Token({
@@ -220,7 +230,6 @@ contract PumpFun is ReentrancyGuard {
         emit Trade(token, ethCost, amount, true, msg.sender, block.timestamp, tokenCurve.virtualEthReserves, tokenCurve.virtualTokenReserves);
         emit PriceUpdate(token, calculateCurrentPrice(token), block.timestamp);
 
-        // Refund excess ETH
         if (msg.value > ethCost) {
             payable(msg.sender).transfer(msg.value - ethCost);
         }
@@ -232,7 +241,7 @@ contract PumpFun is ReentrancyGuard {
         emit ProgressUpdate(
             token,
             (newMcap * 100) / mcapLimit,
-            (newMcap * 100) / kingOfHillMcap,
+            currentKingToken == address(0) ? 0 : (newMcap * 100) / kingOfHillMcap,
             block.timestamp
         );
     }
@@ -384,13 +393,11 @@ contract PumpFun is ReentrancyGuard {
         return allTokens;
     }
 
-    // Add new helper function
     function calculateCurrentPrice(address token) public view returns (uint256) {
         Token memory tokenCurve = bondingCurve[token];
         return (tokenCurve.virtualEthReserves * 1e18) / tokenCurve.virtualTokenReserves;
     }
 
-    // Add function to get token statistics
     function getTokenStats(address token) external view returns (
         uint256 creationTime,
         uint256 lastTradeTime,
